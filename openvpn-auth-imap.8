@@ -1,0 +1,278 @@
+.\" openvpn-auth-imap.8 - manual page for the OpenVPN IMAP auth plugin
+.\" License: MIT
+.Dd November 13, 2026
+.Dt OPENVPN-AUTH-IMAP 8
+.Os
+.Sh NAME
+.Nm openvpn-auth-imap
+.Nd authenticate OpenVPN users against IMAP servers
+.Sh SYNOPSIS
+.Cm plugin
+.Pa /usr/lib/openvpn/plugins/openvpn-auth-imap.so
+.Cm server Ns = Ns Ar url
+.Op Cm server Ns = Ns Ar url ...
+.Op Ar option Ns = Ns Ar value ...
+.Sh DESCRIPTION
+.Nm
+is an
+.Xr openvpn 8
+plugin that authenticates clients using
+.Cm auth-user-pass
+by logging in to one or more IMAP servers with the username and password
+they supply.
+A user is accepted only if an IMAP server confirms the password.
+.Pp
+The plugin is loaded with the
+.Cm plugin
+directive in the OpenVPN server configuration.
+Its arguments are given on the same line as
+.Ar key Ns = Ns Ar value
+pairs.
+Clients need
+.Cm auth-user-pass
+in their configuration.
+.Pp
+OpenVPN passes the plugin the
+.Ev username ,
+.Ev password
+and
+.Ev auth_control_file .
+The plugin double-forks, returns
+.Dv OPENVPN_PLUGIN_FUNC_DEFERRED
+immediately, and the background process tries the configured servers
+through libcurl.
+It then writes
+.Ql 1
+(accept) or
+.Ql 0
+(reject) to the control file, so the VPN server never blocks on IMAP.
+Without an
+.Ev auth_control_file ,
+the check runs synchronously.
+.Sh OPTIONS
+Invalid arguments stop OpenVPN at startup with an error message,
+rather than failing later at login time.
+.Bl -tag -width Ds
+.It Cm server Ns = Ns Ar url
+IMAP server to log in to.
+Required; may be given up to 16 times.
+Servers are tried in the order given.
+.Ar url
+is one of:
+.Bl -tag -width "starttls://host[:port]"
+.It Li imaps:// Ns Ar host Ns Op : Ns Ar port
+Implicit TLS, default port 993.
+.It Li starttls:// Ns Ar host Ns Op : Ns Ar port
+STARTTLS, default port 143.
+The login is refused if the server does not offer STARTTLS.
+.It Li imap:// Ns Ar host Ns Op : Ns Ar port
+Clear text, default port 143.
+Passwords are sent unencrypted; a warning is logged at startup.
+.El
+.Pp
+IPv6 addresses go in brackets, e.g.\&
+.Li imaps://[2001:db8::1] .
+.It Cm policy Ns = Ns Cm failover | any
+How multiple servers are used.
+.Bl -tag -width failover
+.It Cm failover
+(default) Try the next server only if the current one is unreachable or
+returns an error.
+A wrong password rejects the login at once.
+Use this for redundant servers sharing one user database.
+.It Cm any
+Accept if any server accepts the credentials.
+Use this when different servers hold different users.
+.El
+.It Cm cafile Ns = Ns Ar path
+CA bundle used to verify server certificates.
+Defaults to the system trust store.
+.It Cm verify Ns = Ns Cm 0 | 1
+Verify server certificates (default 1).
+.Cm 0
+disables verification and is meant for testing only.
+.It Cm domain Ns = Ns Ar domain
+Append
+.Li @ Ns Ar domain
+to usernames that contain no
+.Ql @ .
+.It Cm restrict-domain Ns = Ns Cm 0 | 1
+With
+.Cm 1 ,
+reject logins that end up outside
+.Cm domain Ns =
+(e.g.\&
+.Li bob@other.com )
+before any server is contacted.
+Requires
+.Cm domain Ns = .
+Without it, a username containing
+.Ql @
+is used as typed, so on an IMAP server hosting several domains every
+mailbox of every domain can log in to the VPN.
+Default 0.
+.It Cm timeout Ns = Ns Ar seconds
+Time allowed per server, 1 to 300 (default 10).
+With
+.Cm policy Ns = Ns Cm failover ,
+the worst-case login time is roughly
+.Ar timeout
+times the number of servers; keep it well below OpenVPN's
+.Cm hand-window
+(60 seconds by default).
+.It Cm max-pending Ns = Ns Ar n
+Number of logins checked in the background at the same time,
+1 to 4096 (default 64).
+Further logins are rejected at once.
+.It Cm match-cert Ns = Ns Cm 0 | 1
+With
+.Cm 1 ,
+require the login to match the client certificate; see
+.Sx CERTIFICATE BINDING .
+Default 0.
+.It Cm cert-map Ns = Ns Ar file
+File listing certificates whose common name differs from the IMAP user;
+see
+.Sx FILES .
+Requires
+.Cm match-cert Ns = Ns Cm 1 .
+.El
+.Sh CERTIFICATE BINDING
+With
+.Cm match-cert Ns = Ns Cm 1 ,
+a login is accepted only if the username matches the client certificate
+the connection was made with.
+A stolen password is then useless without the matching certificate.
+Mismatches are rejected before any IMAP server is contacted.
+.Pp
+OpenVPN passes the certificate field selected by
+.Cm x509-username-field
+to the plugin as
+.Ev common_name .
+The plugin compares it with the login as follows:
+.Bl -tag -width Ds
+.It Direct match
+The login must equal the common name, compared case-insensitively.
+.Cm domain Ns =
+applies to both, so a certificate
+.Li alice
+matches a login as
+.Li alice
+or
+.Li alice@example.com .
+.It Mapped certificates
+A common name listed in the
+.Cm cert-map
+file may log in
+.Em only
+as its mapped users.
+Names not in the map use the direct match.
+.It Logging in with the common name
+If the username typed is exactly the certificate's common name and that
+name is in the map, the plugin logs in to IMAP as the mapped user.
+If the name maps to several users the login is refused; the user must
+type one of the mapped users instead.
+.El
+.Pp
+The binding is only meaningful when OpenVPN verifies client certificates
+against its CA, so never combine
+.Cm match-cert
+with
+.Cm verify-client-cert none .
+Do not use
+.Cm username-as-common-name
+either: it replaces the certificate name with the typed username,
+which defeats the comparison.
+.Sh FILES
+.Bl -tag -width Ds
+.It Pa /usr/lib/openvpn/plugins/openvpn-auth-imap.so
+Default install location of the plugin.
+It should be owned by root and not writable by other users.
+.It Ar cert-map
+Certificate map given with
+.Cm cert-map Ns = .
+Each line holds a common name followed by an IMAP user:
+.Bd -literal -offset indent
+# common_name          imap-user
+vpn-laptop-07          alice@example.com
+# common names may contain spaces
+John Smith             carol
+# repeat a name to allow several users
+shared-kiosk           alice@example.com
+shared-kiosk           bob@example.com
+.Ed
+.Pp
+The user is the last whitespace-separated field; everything before it is
+the common name.
+Common names are compared exactly (case-sensitive), users
+case-insensitively, and
+.Cm domain Ns =
+applies to mapped users without
+.Ql @ .
+Blank lines and lines starting with
+.Ql #
+are ignored; comments cannot follow an entry on the same line.
+.Pp
+The file is read once at startup; restart OpenVPN or send it
+.Dv SIGHUP
+after editing it.
+A missing or malformed file stops OpenVPN with the file name and line
+number.
+The file must be owned by root or the user OpenVPN runs as and must not
+be writable by others, otherwise OpenVPN refuses to start; a
+group-writable file triggers a warning.
+If OpenVPN drops privileges with
+.Cm user Ns / Ns Cm group ,
+the file must be readable by that user for a
+.Dv SIGHUP
+reload to work.
+.El
+.Sh EXAMPLES
+Two redundant servers, bare usernames completed with a domain:
+.Bd -literal -offset indent
+plugin /usr/lib/openvpn/plugins/openvpn-auth-imap.so \e
+    server=imaps://mail1.example.com \e
+    server=imaps://mail2.example.com domain=example.com
+.Ed
+.Pp
+Username and password only, without client certificates:
+.Bd -literal -offset indent
+verify-client-cert none
+username-as-common-name
+.Ed
+.Pp
+Logins bound to client certificates, with a certificate map:
+.Bd -literal -offset indent
+plugin /usr/lib/openvpn/plugins/openvpn-auth-imap.so \e
+    server=imaps://mail.example.com domain=example.com \e
+    match-cert=1 cert-map=/etc/openvpn/cert-map
+x509-username-field CN
+.Ed
+.Pp
+The backslash continuations above are for readability only; OpenVPN
+expects the
+.Cm plugin
+directive on a single line.
+.Pp
+Checking credentials against an IMAP server by hand; if this succeeds,
+the plugin accepts the same credentials:
+.Bd -literal -offset indent
+curl -v --user 'alice@example.com:secret' -X NOOP imaps://mail.example.com/
+.Ed
+.Sh SEE ALSO
+.Xr curl 1 ,
+.Xr openvpn 8
+.Sh BUGS
+Some STARTTLS servers advertise
+.Li LOGINDISABLED
+before TLS and offer only the
+.Li LOGIN
+command afterwards, with no SASL mechanisms.
+With these, some libcurl versions (e.g. 8.5.0) refuse to log in, so
+valid users are rejected.
+Use
+.Li imaps://
+instead.
+.Pp
+Report bugs at
+.Lk https://github.com/snbsrl/openvpn-auth-imap/issues

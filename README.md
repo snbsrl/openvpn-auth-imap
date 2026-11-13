@@ -19,6 +19,8 @@ sudo make install PLUGIN_DIR=/opt/openvpn-auth-imap # or anywhere else
 
 If `openvpn-plugin.h` lives elsewhere: `make OPENVPN_INC=/path/to/include`.
 
+`make install` also installs the `openvpn-auth-imap(8)` man page under `/usr/share/man` (override with `MANDIR=`). To read it without installing: `man ./openvpn-auth-imap.8`.
+
 ## Server configuration
 
 ```
