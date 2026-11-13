@@ -334,10 +334,29 @@ MAP
     $try->(reject => 'one certificate, several users: others refused',
            'shared-kiosk', 'carol', $USERS{carol});
 
-    $try->(reject => 'mapped name no longer allows its own name',
+    $try->(reject => 'mapped name as login is its mapped user, not itself',
            'bob@example.com', 'bob@example.com', 'builder');
+    $try->(accept => '... logs in as the mapped user',
+           'bob@example.com', 'bob@example.com', 'wonderland');
     $try->(accept => '... only the mapped user',
            'bob@example.com', 'alice', 'wonderland');
+
+    # login equal to the certificate's common name uses the mapped user
+    clear_log($s1);
+    $try->(accept => 'common name as login: mapped user used',
+           'vpn-laptop-07', 'vpn-laptop-07', 'wonderland');
+    ok((grep { $_ eq 'LOGIN_OK alice' } log_lines($s1)),
+       '... IMAP login as alice');
+    $try->(accept => 'common name with spaces as login',
+           'John Smith', 'John Smith', $USERS{carol});
+    clear_log($s1);
+    $try->(reject => 'common name mapping to several users',
+           'shared-kiosk', 'shared-kiosk', 'wonderland');
+    is(scalar(log_lines($s1)), 0, '... IMAP server not contacted');
+    $try->(reject => 'only the certificate\'s own name is rewritten',
+           'shared-kiosk', 'vpn-laptop-07', 'wonderland');
+    $try->(accept => 'common name as login: domain= applied to mapped user',
+           'old-bob', 'old-bob', 'builder', 'domain=example.com');
 
     $try->(accept => 'certificate not in map: direct comparison',
            'alice', 'alice', 'wonderland');
@@ -353,6 +372,9 @@ MAP
     $r = auth(user => 'carol', pass => $USERS{carol}, sync => 1,
               env => [ 'common_name=vpn-laptop-07' ], args => [ $srv, @m ]);
     is($r->{rc}, 1, 'synchronous mode applies the map too');
+    $r = auth(user => 'vpn-laptop-07', pass => 'wonderland', sync => 1,
+              env => [ 'common_name=vpn-laptop-07' ], args => [ $srv, @m ]);
+    is($r->{rc}, 0, 'synchronous mode rewrites the common name too');
 };
 
 # ------------------------------------------------------------------ #

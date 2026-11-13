@@ -40,8 +40,10 @@
  * is the last whitespace-separated field, so common names may contain
  * spaces. Repeat a common name to allow several users. A common name that
  * appears in the map may log in only as its mapped users; names not in the
- * map use the direct comparison. Blank lines and lines starting with '#'
- * are ignored. The file is read once at startup.
+ * map use the direct comparison. Logging in with the certificate's own
+ * common name authenticates to IMAP as its mapped user; if the name maps
+ * to several users that login is refused. Blank lines and lines starting
+ * with '#' are ignored. The file is read once at startup.
  *
  * License: MIT
  */
@@ -378,6 +380,22 @@ static int cert_allows(const struct plugin_ctx *ctx, const char *cn,
 
     qualify_name(ctx, cn, name, sizeof(name));
     return !strcasecmp(name, login);
+}
+
+/* Number of cert-map entries for "cn"; *user gets the first one's user. */
+static size_t cert_map_lookup(const struct plugin_ctx *ctx, const char *cn,
+                              const char **user)
+{
+    size_t n = 0;
+
+    *user = NULL;
+    for (size_t i = 0; i < ctx->cert_map_len; i++) {
+        if (strcmp(ctx->cert_map[i].cn, cn) != 0)
+            continue;
+        if (!n++)
+            *user = ctx->cert_map[i].user;
+    }
+    return n;
 }
 
 /* ------------------------------------------------------------------ */
@@ -720,6 +738,24 @@ openvpn_plugin_func_v3(const int v3structver,
                      "user '%s' from %s: no valid client certificate name, "
                      "required by match-cert", login, ip);
             return OPENVPN_PLUGIN_FUNC_ERROR;
+        }
+        /* Logging in with the certificate's own name: use its mapped user. */
+        if (!strcmp(user, cn)) {
+            const char *mapped;
+            size_t n = cert_map_lookup(ctx, cn, &mapped);
+
+            if (n > 1) {
+                ctx->log(PLOG_WARN, PLUGIN_NAME,
+                         "user '%s' from %s: certificate '%s' maps to several "
+                         "users, log in with one of them", user, ip, cn);
+                return OPENVPN_PLUGIN_FUNC_ERROR;
+            }
+            if (n == 1) {
+                qualify_name(ctx, mapped, login, sizeof(login));
+                ctx->log(PLOG_NOTE, PLUGIN_NAME,
+                         "user '%s' from %s mapped to '%s' by cert-map",
+                         user, ip, login);
+            }
         }
         if (!cert_allows(ctx, cn, login)) {
             ctx->log(PLOG_WARN, PLUGIN_NAME,

@@ -65,6 +65,7 @@ OpenVPN passes the certificate field chosen by `x509-username-field` to the plug
 
 - **Direct match:** the login must equal the common name, case-insensitively. `domain=` applies to both, so a certificate `alice` matches a login as `alice` or `alice@example.com`.
 - **Mapped certificates:** for existing certificates whose common name isn't the user's email, list them in the `cert-map` file. A common name that appears in the map may log in **only** as its mapped users. Names not in the map use the direct match.
+- **Logging in with the common name:** if the username typed is exactly the certificate's common name and that name is in the map, the plugin logs in to IMAP as the mapped user. If the name maps to several users the login is refused; type one of the mapped users instead.
 
 `cert-map` format, one pair per line:
 
