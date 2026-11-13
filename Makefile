@@ -3,7 +3,7 @@
 # Tests:    perl (Test::More), optionally IO::Socket::SSL + openssl for TLS
 #
 # On BSD systems you will typically want something like:
-#   make OPENVPN_INC=/usr/local/include PLUGIN_DIR=/usr/local/lib/openvpn/plugins \
+#   make OPENVPN_INC=/usr/local/include/openvpn PLUGIN_DIR=/usr/local/lib/openvpn/plugins \
 #        MANDIR=/usr/local/man
 
 CC          ?= cc
