@@ -38,9 +38,11 @@ Clients need `auth-user-pass` in their config. Use an absolute path on the `plug
 | `server=` | (required) | IMAP server URL, repeatable (max 16): `imaps://host[:port]` (default port 993), `starttls://host[:port]` (143) or `imap://host[:port]` (143, clear text). IPv6: `imaps://[2001:db8::1]` |
 | `policy=` | `failover` | `failover`: try the next server only if one is unreachable or errors; a wrong password rejects at once. `any`: accept if any server accepts |
 | `cafile=` | system store | CA bundle for verifying server certificates |
-| `verify=` | `1` | `0` skips certificate checks (testing only) |
+| `verify=` | `1` | `0` skips certificate checks (testing only). Only `0` and `1` are accepted |
 | `domain=` | | Appended as `@domain` when the username has no `@` |
-| `timeout=` | `10` | Seconds allowed **per server** |
+| `restrict-domain=` | `0` | `1` rejects logins that end up outside `domain=` (e.g. `bob@other.com`) before any server is contacted. Requires `domain=` |
+| `timeout=` | `10` | Seconds allowed **per server** (1–300) |
+| `max-pending=` | `64` | Logins checked in the background at the same time; further logins are rejected at once |
 | `match-cert=` | `0` | `1` requires the login to match the client certificate (see below) |
 | `cert-map=` | | File of certificates whose common name differs from the IMAP user; requires `match-cert=1` |
 
@@ -49,6 +51,8 @@ Invalid arguments stop OpenVPN at startup with an error message, rather than fai
 **Timing:** with `failover`, worst-case login time is roughly `timeout × number of servers`. Keep that well below OpenVPN's `hand-window` (60 s by default).
 
 ### Choosing a policy
+
+Without `restrict-domain=1`, a username that already contains `@` is used as typed, so on an IMAP server hosting several domains every mailbox of every domain can log in to the VPN.
 
 Use `failover` for redundant servers sharing one user database: a wrong password is final and isn't retried elsewhere. Use `any` when different servers hold different users (e.g. two mail domains). The server order then only affects speed.
 
@@ -81,7 +85,7 @@ shared-kiosk           bob@example.com
 
 The user is the last field on the line; everything before it is the common name. Common names are compared exactly (case-sensitive), users case-insensitively, and `domain=` applies to mapped users without `@`. Blank lines and lines starting with `#` are ignored; comments can't follow an entry on the same line.
 
-The file is read once at startup, and a missing or malformed file stops OpenVPN with the file name and line number. After editing it, restart OpenVPN or send it `SIGHUP`. If OpenVPN drops privileges (`user`/`group`), the file must be readable by that user for a `SIGHUP` reload to work.
+The file is read once at startup, and a missing or malformed file stops OpenVPN with the file name and line number. Anyone who can write the file can bind any certificate to any user, so it must be owned by root (or the user OpenVPN runs as) and not world-writable; otherwise OpenVPN refuses to start. After editing it, restart OpenVPN or send it `SIGHUP`. If OpenVPN drops privileges (`user`/`group`), the file must be readable by that user for a `SIGHUP` reload to work.
 
 **Requirements:**
 
@@ -94,6 +98,12 @@ The file is read once at startup, and a missing or malformed file stops OpenVPN 
 OpenVPN calls the plugin with `username`, `password` and `auth_control_file`. The plugin double-forks, returns `DEFERRED` immediately, and the background process tries the servers through libcurl. It then writes `1` (accept) or `0` (reject) to the control file. The VPN server never blocks on IMAP. Without an `auth_control_file`, the check runs synchronously.
 
 Passwords are never logged. Empty, overlong, or control-character-laden credentials are rejected before any server is contacted. With `starttls://`, the login is refused if the server doesn't offer STARTTLS, so passwords are never sent in clear text.
+
+A login only counts as accepted if the password was actually sent (`LOGIN` or `AUTHENTICATE`) and the server answered OK. Only password-based SASL mechanisms are used (`PLAIN`, `LOGIN`, `CRAM-MD5`, `DIGEST-MD5`), falling back to the `LOGIN` command. Mechanisms like `GSSAPI` would authenticate with the VPN server's own credentials instead of the user's password. Proxy settings in OpenVPN's environment (`all_proxy`, `imap_proxy`, ...) are ignored, and TLS 1.2 is the minimum version.
+
+### Brute force and lockouts
+
+The IMAP server sees every login attempt as coming from the VPN server. If it locks out IP addresses after failed logins (fail2ban, Dovecot `auth_penalty`), a password-guessing client can lock out **all** VPN users. Throttle on the OpenVPN side instead: use `connect-freq` and `max-clients`, and point fail2ban at the plugin's `rejected by` log lines, which include the client address.
 
 ## Tests
 

@@ -15,10 +15,13 @@
 #   --auth login|plain|plain-only
 #                      login: LOGIN only; plain: also advertise AUTH=PLAIN
 #                      SASL-IR; plain-only: AUTH=PLAIN with LOGINDISABLED
-#   --behaviour normal|hang|garbage|bye
+#   --behaviour normal|hang|garbage|bye|preauth
 #                      hang: accept the TCP connection, never greet
 #                      garbage: send a non-IMAP reply and close
 #                      bye: greet with "* BYE" (server unavailable)
+#                      preauth: greet with "* PREAUTH" (already logged in,
+#                        as an attacker injecting a greeting would)
+#   --gssapi           also advertise AUTH=GSSAPI (always refused)
 #   --delay SECONDS    wait this long before answering LOGIN/AUTHENTICATE
 #   --no-logindisabled with --tls starttls: don't advertise LOGINDISABLED
 #                      before TLS (LOGIN in clear text is still refused)
@@ -41,7 +44,7 @@ my %opt = (
 );
 my @users;
 GetOptions(\%opt, 'port=i', 'portfile=s', 'log=s', 'tls=s', 'cert=s',
-           'key=s', 'auth=s', 'behaviour=s', 'delay=f', 'logindisabled!',
+           'key=s', 'auth=s', 'behaviour=s', 'delay=f', 'logindisabled!', 'gssapi',
            'user=s' => \@users)
     or die "bad options\n";
 
@@ -158,7 +161,12 @@ sub handle_client {
         return;
     }
 
-    send_line($s, '* OK fake-imapd ready');
+    if ($opt{behaviour} eq 'preauth') {
+        send_line($s, '* PREAUTH fake-imapd: already authenticated');
+    }
+    else {
+        send_line($s, '* OK fake-imapd ready');
+    }
 
     while (defined(my $line = read_line($s))) {
         my ($tag, $cmd, $rest) = $line =~ /^(\S+)\s+(\S+)\s*(.*)$/;
@@ -178,6 +186,7 @@ sub handle_client {
             push @caps, 'STARTTLS'               if $need_tls;
             push @caps, 'AUTH=PLAIN', 'SASL-IR'
                 if $opt{auth} =~ /^plain/ && !$need_tls;
+            push @caps, 'AUTH=GSSAPI'            if $opt{gssapi};
             push @caps, 'LOGINDISABLED'          if $advertise_off;
             send_line($s, "* CAPABILITY @caps");
             send_line($s, "$tag OK CAPABILITY completed");
@@ -205,6 +214,11 @@ sub handle_client {
         }
         elsif ($cmd eq 'AUTHENTICATE') {
             my ($mech, $ir) = split ' ', $rest, 2;
+            if (uc($mech // '') eq 'GSSAPI') {
+                logmsg('AUTH_GSSAPI');
+                send_line($s, "$tag NO GSSAPI not available");
+                next;
+            }
             if ($opt{auth} !~ /^plain/ || uc($mech // '') ne 'PLAIN'
                 || $need_tls) {
                 send_line($s, "$tag NO Unsupported mechanism");
@@ -224,6 +238,7 @@ sub handle_client {
             check_creds($s, $tag, $u, $p);
         }
         elsif ($cmd eq 'NOOP') {
+            logmsg('NOOP');
             send_line($s, "$tag OK NOOP completed");
         }
         elsif ($cmd eq 'LOGOUT') {

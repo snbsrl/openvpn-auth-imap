@@ -62,6 +62,7 @@ sub start_server {
     push @cmd, '--behaviour', $a{behaviour} if $a{behaviour};
     push @cmd, '--delay', $a{delay}         if $a{delay};
     push @cmd, '--no-logindisabled'         if $a{no_logindisabled};
+    push @cmd, '--gssapi'                   if $a{gssapi};
 
     my $pid = fork // die "fork: $!";
     if ($pid == 0) {
@@ -152,6 +153,7 @@ my $hang = start_server(behaviour => 'hang');
 my $junk = start_server(behaviour => 'garbage');
 my $bye  = start_server(behaviour => 'bye');
 my $sasl = start_server(auth => 'plain-only');
+my $pre  = start_server(behaviour => 'preauth');
 my $dead = dead_port();
 
 # ------------------------------------------------------------------ #
@@ -167,6 +169,10 @@ subtest 'configuration' => sub {
                  'server=imaps://[::1', 'server=mail.example.com',
                  'server=mail.example.com:993', 'server=://h',
                  'policy=random', 'timeout=0', 'domain=a/b',
+                 'verify=yes', 'verify=true', 'verify=', 'timeout=10s',
+                 'timeout=301', 'timeout=99999999999', 'max-pending=0',
+                 'max-pending=x', 'restrict-domain=yes',
+                 'restrict-domain=1',    # without domain=
                  'frobnicate=1', 'noequals') {
         my $r = auth(user => 'alice', pass => 'x',
                      args => ['server=imap://127.0.0.1:1', $bad]);
@@ -440,6 +446,95 @@ subtest 'SASL PLAIN' => sub {
 };
 
 # ------------------------------------------------------------------ #
+subtest 'PREAUTH greeting does not bypass the password' => sub {
+    clear_log($pre);
+    my $r = rejects('PREAUTH server, wrong password', user => 'alice',
+                    pass => 'wrong', args => [ 'server=' . url($pre) ]);
+    like($r->{err}, qr/without a login/, '... logged');
+    rejects('PREAUTH server, sync mode', user => 'alice', pass => 'wrong',
+            sync => 1, args => [ 'server=' . url($pre) ]);
+    ok(!(grep { /^LOGIN|^AUTH/ } log_lines($pre)), 'no login was attempted');
+
+    my @a = (args => [ 'server=' . url($pre), 'server=' . url($s1) ]);
+    accepts('PREAUTH server is skipped, next server verifies',
+            user => 'alice', pass => 'wonderland', @a);
+    rejects('... and rejects a wrong password',
+            user => 'alice', pass => 'wrong', @a);
+};
+
+# ------------------------------------------------------------------ #
+subtest 'only password-based SASL mechanisms' => sub {
+    my $gss = start_server(auth => 'plain', gssapi => 1);
+    clear_log($gss);
+    # libcurl only considers GSSAPI for names with '@' (or a domain=)
+    accepts('GSSAPI advertised: PLAIN used', user => 'bob@example.com',
+            pass => 'builder', args => [ 'server=' . url($gss) ]);
+    my @l = log_lines($gss);
+    ok((grep { $_ eq 'AUTH_PLAIN' } @l), 'AUTHENTICATE PLAIN sent');
+    ok(!(grep { $_ eq 'AUTH_GSSAPI' } @l), 'GSSAPI not attempted');
+
+    my $gss_login = start_server(gssapi => 1);
+    clear_log($gss_login);
+    accepts('only GSSAPI and LOGIN: LOGIN command used',
+            user => 'bob@example.com', pass => 'builder', args => [ 'server=' . url($gss_login) ]);
+    ok((grep { $_ eq 'LOGIN_OK bob@example.com' } log_lines($gss_login)), '... LOGIN');
+    rejects('... wrong password still rejected', user => 'bob@example.com',
+            pass => 'nope', args => [ 'server=' . url($gss_login) ]);
+};
+
+# ------------------------------------------------------------------ #
+subtest 'restrict-domain=' => sub {
+    my @a = (args => [ 'server=' . url($s1), 'domain=example.com',
+                       'restrict-domain=1' ]);
+    accepts('bare username', user => 'bob', pass => 'builder', @a);
+    accepts('username in domain', user => 'bob@example.com',
+            pass => 'builder', @a);
+    clear_log($s1);
+    rejects('username in another domain', user => 'bob@other.com',
+            pass => 'builder', @a);
+    rejects('domain suffix trick', user => 'bob@evil-example.com',
+            pass => 'builder', @a);
+    is(scalar(log_lines($s1)), 0, 'IMAP server not contacted');
+};
+
+# ------------------------------------------------------------------ #
+subtest 'max-pending=' => sub {
+    my $slow = start_server(delay => 2);
+    my $r = auth(user => 'alice', pass => 'wonderland', count => 4,
+                 args => [ 'server=' . url($slow), 'max-pending=2' ]);
+    is(scalar(() = $r->{out} =~ /ACCEPT/g), 2, 'two logins run');
+    is(scalar(() = $r->{out} =~ /REJECT/g), 2, 'two refused at once');
+    like($r->{err}, qr/too many logins in progress/, '... logged');
+};
+
+# ------------------------------------------------------------------ #
+subtest 'environment and certificate edge cases' => sub {
+    {
+        local $ENV{all_proxy}  = "http://127.0.0.1:$dead";
+        local $ENV{imap_proxy} = "http://127.0.0.1:$dead";
+        accepts('proxy environment variables ignored', user => 'alice',
+                pass => 'wonderland', args => [ 'server=' . url($s1) ]);
+    }
+
+    clear_log($s1);
+    rejects('match-cert: placeholder common_name UNDEF', user => 'UNDEF',
+            pass => 'x', env => [ 'common_name=UNDEF' ],
+            args => [ 'server=' . url($s1), 'match-cert=1' ]);
+    is(scalar(log_lines($s1)), 0, 'IMAP server not contacted');
+
+    my $map = "$dir/ww.map";
+    open my $fh, '>', $map or die;
+    print $fh "laptop alice\n";
+    close $fh;
+    chmod 0666, $map;
+    my $r = auth(user => 'alice', pass => 'wonderland',
+                 args => [ 'server=' . url($s1), 'match-cert=1',
+                           "cert-map=$map" ]);
+    is($r->{rc}, 2, 'world-writable cert-map refused');
+    like($r->{err}, qr/not writable by others/, '... explained');
+};
+
+# ------------------------------------------------------------------ #
 subtest 'multiple servers: failover policy' => sub {
     clear_log($_) for $s1, $s2;
 
@@ -606,6 +701,18 @@ SKIP: {
                 args => [ 'server=' . url($s1, 'starttls') ]);
         ok(!(grep { /^LOGIN/ } log_lines($s1)),
            'password not sent in clear text when STARTTLS is missing');
+
+        my $stls_pre = start_server(tls => 'starttls', cert => $cert,
+                                    key => $key, behaviour => 'preauth');
+        rejects('starttls: PREAUTH injected before TLS', user => 'alice',
+                pass => 'wrong',
+                args => [ 'server=' . url($stls_pre, 'starttls'),
+                          "cafile=$cert" ]);
+        my $imaps_pre = start_server(tls => 'imaps', cert => $cert,
+                                     key => $key, behaviour => 'preauth');
+        rejects('imaps with verify=0: PREAUTH', user => 'alice',
+                pass => 'wrong',
+                args => [ 'server=' . url($imaps_pre, 'imaps'), 'verify=0' ]);
 
         my $other_srv = start_server(tls => 'imaps', cert => $other,
                                      key => "$dir/o.key");

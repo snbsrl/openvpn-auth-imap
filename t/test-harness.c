@@ -182,6 +182,12 @@ int main(int argc, char **argv)
         char *p = xasprintf("password=%s", pass);
 
         acf[n] = xasprintf("%s/acf.%d", tmpdir, n);
+        /* OpenVPN creates the (empty) control file before the call. */
+        if (!sync) {
+            FILE *cf = fopen(acf[n], "w");
+            if (cf)
+                fclose(cf);
+        }
         char *a = xasprintf("auth_control_file=%s", acf[n]);
 
         env[ne++] = u;
