@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ubuntu:
+    name: Ubuntu (${{ matrix.cc }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [gcc, clang]
+    env:
+      CC: ${{ matrix.cc }}
+      CFLAGS: -O2 -g -Werror
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang pkg-config libcurl4-openssl-dev libssl-dev \
+            openvpn openssl libio-socket-ssl-perl
+
+      - name: Build
+        run: make
+
+      - name: Test
+        run: make test
+
+  fedora:
+    name: Fedora (gcc)
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    env:
+      CFLAGS: -O2 -g -Werror
+    steps:
+      - name: Install dependencies
+        run: |
+          dnf install -y gcc make pkgconf libcurl-devel openssl-devel \
+            openvpn-devel openssl perl-Test-Harness perl-Test-Simple \
+            perl-IO-Socket-SSL perl-Time-HiRes perl-MIME-Base64 \
+            perl-Getopt-Long perl-File-Temp perl-FindBin
+
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: make
+
+      - name: Test
+        run: make test
